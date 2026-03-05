@@ -13,6 +13,8 @@ from torch import nn
 from typing import List, Optional, Union
 from urllib.parse import urlparse
 
+from transformers.utils import is_torch_cuda_available, is_torch_npu_available
+
 from swift.infer_engine import AdapterRequest, RequestConfig
 from swift.infer_engine.protocol import ChatCompletionResponse, RolloutInferRequest, RolloutOutput
 from swift.metrics import Metric
@@ -113,6 +115,26 @@ class VLLMClient:
         if not all(server_status):
             failed_servers = [self.base_urls[i] for i, status in enumerate(server_status) if not status]
             raise ConnectionError(f'Servers not reachable after {total_timeout}s: {failed_servers}')
+
+    def _device_synchronize(self):
+        if is_torch_npu_available():
+            torch.npu.synchronize()
+        elif is_torch_cuda_available():
+            torch.cuda.synchronize()
+
+    def _device_current_stream(self):
+        if is_torch_npu_available():
+            return torch.npu.current_stream()
+        if is_torch_cuda_available():
+            return torch.cuda.current_stream()
+        return None
+
+    def _broadcast(self, comm, tensor, src):
+        stream = self._device_current_stream()
+        if stream is None:
+            comm.broadcast(tensor, src=src)
+        else:
+            comm.broadcast(tensor, src=src, stream=stream)
 
     def infer(
         self,
@@ -229,10 +251,9 @@ class VLLMClient:
                 if response.status_code != 200:
                     raise Exception(f'Server {i} update failed: {response.text}')
 
-                torch.cuda.synchronize()
-                self.pynccl_comms[i].broadcast(
-                    weights, src=self.pynccl_comms[i].rank, stream=torch.cuda.current_stream())
-                torch.cuda.synchronize()
+                self._device_synchronize()
+                self._broadcast(self.pynccl_comms[i], weights, src=self.pynccl_comms[i].rank)
+                self._device_synchronize()
                 self.pynccl_comms[i].group.barrier()
             except Exception as e:
                 errors[i] = e
@@ -277,10 +298,9 @@ class VLLMClient:
                 if response.status_code != 200:
                     raise Exception(f'Server {i} update adapter failed: {response.text}')
 
-                torch.cuda.synchronize()
-                self.pynccl_comms[i].broadcast(
-                    flattened_tensor, src=self.pynccl_comms[i].rank, stream=torch.cuda.current_stream())
-                torch.cuda.synchronize()
+                self._device_synchronize()
+                self._broadcast(self.pynccl_comms[i], flattened_tensor, src=self.pynccl_comms[i].rank)
+                self._device_synchronize()
                 self.pynccl_comms[i].group.barrier()
             except Exception as e:
                 errors[i] = e
@@ -338,11 +358,10 @@ class VLLMClient:
                     raise Exception(f'Server {i} update adapter failed: {response.text}')
 
                 # Broadcast each tensor individually
-                torch.cuda.synchronize()
+                self._device_synchronize()
                 for name, param in lora_params.items():
-                    self.pynccl_comms[i].broadcast(
-                        param, src=self.pynccl_comms[i].rank, stream=torch.cuda.current_stream())
-                torch.cuda.synchronize()
+                    self._broadcast(self.pynccl_comms[i], param, src=self.pynccl_comms[i].rank)
+                self._device_synchronize()
                 self.pynccl_comms[i].group.barrier()
             except Exception as e:
                 errors[i] = e
@@ -380,10 +399,9 @@ class VLLMClient:
                 if response.status_code != 200:
                     raise Exception(f'Server {i} update flattened params failed: {response.text}')
 
-                torch.cuda.synchronize()
-                self.pynccl_comms[i].broadcast(
-                    flattened_tensor, src=self.pynccl_comms[i].rank, stream=torch.cuda.current_stream())
-                torch.cuda.synchronize()
+                self._device_synchronize()
+                self._broadcast(self.pynccl_comms[i], flattened_tensor, src=self.pynccl_comms[i].rank)
+                self._device_synchronize()
                 self.pynccl_comms[i].group.barrier()
             except Exception as e:
                 errors[i] = e

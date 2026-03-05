@@ -34,6 +34,8 @@ from multiprocessing import Pipe, Process
 from multiprocessing.connection import Connection
 from typing import Dict, List, Optional, Union
 
+from transformers.utils import is_torch_cuda_available, is_torch_npu_available
+
 from swift.arguments import RolloutArguments
 from swift.infer_engine import GRPOVllmEngine, InferClient
 from swift.infer_engine.protocol import (InitCommunicatorRequest, RequestConfig, RolloutInferRequest,
@@ -77,6 +79,22 @@ Note:
 """
 
 patch_vllm_load_adapter()
+
+
+def _device_current_stream():
+    if is_torch_npu_available():
+        return torch.npu.current_stream()
+    if is_torch_cuda_available():
+        return torch.cuda.current_stream()
+    return None
+
+
+def _broadcast(comm, tensor, src):
+    stream = _device_current_stream()
+    if stream is None:
+        comm.broadcast(tensor, src=src)
+    else:
+        comm.broadcast(tensor, src=src, stream=stream)
 
 
 class WeightSyncWorkerExtension:
@@ -143,7 +161,7 @@ class WeightSyncWorkerExtension:
         weight = torch.empty(shape, dtype=dtype, device=self.communicator.device)
 
         # Use NCCL to broadcast the updated weights from the client (src) to all workers.
-        self.communicator.broadcast(weight, src=self.client_rank, stream=torch.cuda.current_stream())
+        _broadcast(self.communicator, weight, src=self.client_rank)
         self.communicator.group.barrier()
 
         # Patch MoE weight_loader if needed
@@ -162,7 +180,7 @@ class WeightSyncWorkerExtension:
         flatten_tensor_length = metadatas[-1].end_idx
         dtype = getattr(torch, metadatas[-1].dtype.split('.')[-1])
         flatten_tensor = torch.empty(flatten_tensor_length, dtype=dtype, device=self.communicator.device)
-        self.communicator.broadcast(flatten_tensor, src=self.client_rank, stream=torch.cuda.current_stream())
+        _broadcast(self.communicator, flatten_tensor, src=self.client_rank)
         self.communicator.group.barrier()
         flattened_tensor_bucket = FlattenedTensorBucket(metadata=metadatas, flattened_tensor=flatten_tensor)
         named_params = flattened_tensor_bucket.reconstruct_tensors()
@@ -194,7 +212,7 @@ class WeightSyncWorkerExtension:
             dtype = getattr(torch, metadata['dtype'].split('.')[-1])
             shape = tuple(metadata['shape'])
             tensor = torch.empty(shape, dtype=dtype, device=self.communicator.device)
-            self.communicator.broadcast(tensor, src=self.client_rank, stream=torch.cuda.current_stream())
+            _broadcast(self.communicator, tensor, src=self.client_rank)
             named_params[name] = tensor
 
         self.communicator.group.barrier()
@@ -222,7 +240,7 @@ class WeightSyncWorkerExtension:
         dtype = getattr(torch, metadatas[-1].dtype.split('.')[-1])
         flatten_tensor = torch.empty(flatten_tensor_length, dtype=dtype, device=self.communicator.device)
 
-        self.communicator.broadcast(flatten_tensor, src=self.client_rank, stream=torch.cuda.current_stream())
+        _broadcast(self.communicator, flatten_tensor, src=self.client_rank)
         self.communicator.group.barrier()
 
         flattened_tensor_bucket = FlattenedTensorBucket(metadata=metadatas, flattened_tensor=flatten_tensor)
