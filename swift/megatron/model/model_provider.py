@@ -46,6 +46,11 @@ def _get_transformer_layer_spec(use_te, config):
             **kwargs,
         )
     else:
+        kwargs = {}
+        if mcore_013:
+            kwargs = {'qk_l2_norm': args.qk_l2_norm}
+        if hasattr(config, 'use_kitchen'):
+            kwargs['use_kitchen'] = config.use_kitchen
         return get_gpt_layer_local_spec(
             args.num_experts,
             args.moe_grouped_gemm,
@@ -53,7 +58,7 @@ def _get_transformer_layer_spec(use_te, config):
             args.multi_latent_attention,
             moe_use_legacy_grouped_gemm=args.moe_use_legacy_grouped_gemm,
             normalization=args.normalization,
-            use_kitchen=config.use_kitchen,
+            **kwargs,
         )
 
 

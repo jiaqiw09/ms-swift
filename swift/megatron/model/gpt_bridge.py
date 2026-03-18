@@ -1190,7 +1190,11 @@ class GPTBridge:
             self._set_state_dict(mg_layer, 'input_layernorm.weight', hf_state_dict, 'input_layernorm.weight', to_mcore)
         else:
             hf_state_dict.update(self._set_attn_state(mg_attn, hf_state_dict, 'self_attn.', layer_idx, to_mcore))
-            self._set_state_dict(mg_layer, 'self_attention.linear_qkv.layer_norm_weight', hf_state_dict,
+            # Fallback for TE or Local linear layer normalization
+            mg_qkv_norm_key = 'self_attention.linear_qkv.layer_norm_weight'
+            if mg_layer is not None and not hasattr(mg_layer.self_attention.linear_qkv, 'layer_norm_weight'):
+                mg_qkv_norm_key = 'input_layernorm.weight'
+            self._set_state_dict(mg_layer, mg_qkv_norm_key, hf_state_dict,
                                  'input_layernorm.weight', to_mcore)
         return hf_state_dict
 
@@ -1208,7 +1212,11 @@ class GPTBridge:
                                  to_mcore)
         else:
             hf_state_dict.update(self._set_mlp_state(mg_mlp, hf_state_dict, f'{hf_mlp_prefix}.', layer_idx, to_mcore))
-            self._set_state_dict(mg_layer, 'mlp.linear_fc1.layer_norm_weight', hf_state_dict,
+            # Fallback for TE or Local linear layer normalization
+            mg_mlp_norm_key = 'mlp.linear_fc1.layer_norm_weight'
+            if mg_layer is not None and not hasattr(mg_layer.mlp.linear_fc1, 'layer_norm_weight'):
+                mg_mlp_norm_key = 'pre_mlp_layernorm.weight'
+            self._set_state_dict(mg_layer, mg_mlp_norm_key, hf_state_dict,
                                  'post_attention_layernorm.weight', to_mcore)
         return hf_state_dict
 
